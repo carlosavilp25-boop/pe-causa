@@ -44,8 +44,26 @@ class Fighter {
         this.state = "idle";
 
         this.stateTimer = 0;
+
+        // Hit effect (onomatopeya)
+        this.hitText = "";
+        this.hitTimer = 0;
+        this.hitTextAlpha = 255;
     }
 
+    // Orienta al personaje mirando hacia el enemigo
+    orientTowards(enemy) {
+        if (!enemy) return;
+        // Centro X de cada uno
+        let myCenter = this.x + this.w / 2;
+        let enemyCenter = enemy.x + enemy.w / 2;
+
+        if (myCenter < enemyCenter) {
+            this.facing = 1;
+        } else {
+            this.facing = -1;
+        }
+    }
     update() {
 
         this.vx = 0;
@@ -126,25 +144,34 @@ class Fighter {
             }
         }
     }
-
+    
     draw() {
-
         push();
 
         if (this.facing === -1) {
-
             translate(this.x + this.w, this.y);
-
             scale(-1, 1);
-
             image(this.currentSprite, 0, 0, this.w, this.h);
-
         } else {
-
             image(this.currentSprite, this.x, this.y, this.w, this.h);
         }
 
         pop();
+
+        // Mostrar onomatopeya al recibir un golpe (fade)
+        if (this.hitTimer > 0) {
+            push();
+            textSize(32);
+            textAlign(CENTER, BOTTOM);
+            stroke(0);
+            strokeWeight(3);
+            fill(255, 240, 0, this.hitTextAlpha);
+            text(this.hitText, this.x + this.w / 2, this.y - 10);
+            pop();
+
+            this.hitTimer--;
+            this.hitTextAlpha = max(0, this.hitTextAlpha - (255 / 45));
+        }
     }
 
     changeState(state) {
@@ -222,18 +249,21 @@ class Fighter {
         let enemyX = enemy.x + enemy.w / 2;
         let enemyY = enemy.y + enemy.h / 2;
 
-        // Calcular distancia con hitbox más precisa
-        let hitboxWidth = range * 0.8;
-        let hitboxHeight = this.h * 0.6;
+        // Detección robusta: el enemigo debe estar ENFRENTE y DENTRO del rango horizontal y vertical
+        let relativeX = enemyX - (this.x + this.w / 2);
+        let inFront = (this.facing === 1 && relativeX > 0) || (this.facing === -1 && relativeX < 0);
+        let withinRange = Math.abs(relativeX) <= range;
+        let verticalTolerance = this.h * 0.5; // tolerancia vertical para el golpe
+        let withinVertical = Math.abs(enemyY - attackY) <= verticalTolerance;
 
-        let dx = attackX - enemyX;
-        let dy = attackY - enemyY;
-
-        // Hitbox rectangular mejorada
-        if (Math.abs(dx) < hitboxWidth / 2 && Math.abs(dy) < hitboxHeight / 2) {
-
+        if (inFront && withinRange && withinVertical) {
             enemy.health -= damage;
             console.log(type + " ¡GOLPE! Daño: " + damage);
+            // Onomatopeya al recibir daño
+            let onos = ["¡PAF!", "¡BAM!", "¡PUM!", "¡ZAS!", "¡BOOM!", "¡ZAC!"];
+            enemy.hitText = random(onos);
+            enemy.hitTimer = 45; // frames
+            enemy.hitTextAlpha = 255;
         }
 
         this.attackCooldown = cooldown;
@@ -346,6 +376,10 @@ function draw() {
         if (!roundEnded) {
             p1.update();
             p2.update();
+
+            // Asegurar que siempre miren hacia el otro
+            p1.orientTowards(p2);
+            p2.orientTowards(p1);
 
             p1.draw();
             p2.draw();
@@ -685,6 +719,26 @@ function nextRound() {
     // Restaurar salud
     p1.health = 100;
     p2.health = 100;
+    // Restaurar posiciones, velocidades y estados a valores iniciales
+    p1.x = 250;
+    p1.y = 350;
+    p1.vx = 0;
+    p1.vy = 0;
+    p1.onGround = true;
+    p1.attackCooldown = 0;
+    p1.changeState("idle");
+    p1.currentSprite = p1.sprites.idle;
+    p1.facing = 1;
+
+    p2.x = width - 470;
+    p2.y = 350;
+    p2.vx = 0;
+    p2.vy = 0;
+    p2.onGround = true;
+    p2.attackCooldown = 0;
+    p2.changeState("idle");
+    p2.currentSprite = p2.sprites.idle;
+    p2.facing = -1;
 
     console.log("=== INICIANDO ROUND " + currentRound + " ===");
 }
