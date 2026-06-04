@@ -11,8 +11,8 @@ class Fighter {
         this.x = x;
         this.y = y;
 
-        this.w = 220;
-        this.h = 300;
+        this.w = 300;
+        this.h = 400;
 
         this.vx = 0;
         this.vy = 0;
@@ -38,12 +38,26 @@ class Fighter {
 
         // Sprites
         this.sprites = sprites;
-
-        this.currentSprite = this.sprites.idle;
+        this.currentFrames = this.sprites.idle;
+        this.frameIndex = 0;
+        this.frameTimer = 0;
+        this.frameDelay = 6;
+        this.currentFrame = this.currentFrames[0];
 
         this.state = "idle";
+        this.isAnimating = false;
 
-        this.stateTimer = 0;
+        this.animationConfigs = {
+            idle: { loop: true, delay: 6 },
+            walk: { loop: true, delay: 4 },
+            jump: { loop: false, delay: 8 },
+            lp: { loop: false, delay: 4, cooldown: 24 },
+            mp: { loop: false, delay: 5, cooldown: 35 },
+            hp: { loop: false, delay: 6, cooldown: 72 },
+            lk: { loop: false, delay: 4, cooldown: 52 },
+            mk: { loop: false, delay: 5, cooldown: 50 },
+            hk: { loop: false, delay: 6, cooldown: 84 }
+        };
 
         // Hit effect (onomatopeya)
         this.hitText = "";
@@ -100,14 +114,13 @@ class Fighter {
             this.changeState("jump");
         }
 
-        // ESTADO WALK
-        if (moving && this.onGround && this.attackCooldown <= 0) {
-
-            this.changeState("walk");
-
-        } else if (!moving && this.onGround && this.attackCooldown <= 0) {
-
-            this.changeState("idle");
+        // ESTADO WALK - Solo cambiar si no estamos atacando
+        if (!this.isAnimating) {
+            if (moving && this.onGround && this.attackCooldown <= 0) {
+                this.changeState("walk");
+            } else if (!moving && this.onGround && this.attackCooldown <= 0) {
+                this.changeState("idle");
+            }
         }
 
         // FISICA
@@ -132,17 +145,10 @@ class Fighter {
 
         // COOLDOWN
         if (this.attackCooldown > 0) {
-
             this.attackCooldown--;
-
-        } else {
-
-            // VOLVER A IDLE
-            if (this.onGround && !moving) {
-
-                this.changeState("idle");
-            }
         }
+
+        this.updateAnimation();
     }
     
     draw() {
@@ -151,9 +157,9 @@ class Fighter {
         if (this.facing === -1) {
             translate(this.x + this.w, this.y);
             scale(-1, 1);
-            image(this.currentSprite, 0, 0, this.w, this.h);
+            image(this.currentFrame, 0, 0, this.w, this.h);
         } else {
-            image(this.currentSprite, this.x, this.y, this.w, this.h);
+            image(this.currentFrame, this.x, this.y, this.w, this.h);
         }
 
         pop();
@@ -174,16 +180,56 @@ class Fighter {
         }
     }
 
+    updateAnimation() {
+        this.frameTimer++;
+        if (this.frameTimer < this.frameDelay) return;
+
+        this.frameTimer = 0;
+        this.frameIndex++;
+
+        let config = this.animationConfigs[this.state] || { loop: true };
+        if (this.frameIndex >= this.currentFrames.length) {
+            if (config.loop) {
+                this.frameIndex = 0;
+            } else {
+                // Animación no-looping terminada
+                this.frameIndex = this.currentFrames.length - 1;
+                this.isAnimating = false;
+                
+                // Solo cambiar a idle cuando la animación termina
+                if (this.onGround) {
+                    if (this.vx !== 0) {
+                        this.changeState("walk");
+                    } else {
+                        this.changeState("idle");
+                    }
+                }
+            }
+        }
+
+        this.currentFrame = this.currentFrames[this.frameIndex];
+    }
+
     changeState(state) {
+        if (this.state === state) return;
 
         this.state = state;
-
-        this.currentSprite = this.sprites[state];
+        this.currentFrames = this.sprites[state] || this.sprites.idle;
+        this.frameIndex = 0;
+        this.frameTimer = 0;
+        this.frameDelay = this.animationConfigs[state]?.delay || 6;
+        this.currentFrame = this.currentFrames[0];
+        
+        // Marcar que está animando si es una animación de ataque o salto
+        let config = this.animationConfigs[state] || { loop: true };
+        if (!config.loop) {
+            this.isAnimating = true;
+        }
     }
 
     attack(enemy, type) {
-
-        if (this.attackCooldown > 0) return;
+        // Permitir nuevos ataques incluso si hay cooldown, solo si están animando
+        if (this.attackCooldown > 0 && !this.isAnimating) return;
 
         let damage = 0;
         let range = 0;
@@ -195,7 +241,7 @@ class Fighter {
             case "LP":
                 damage = 4;
                 range = 120;
-                cooldown = 10;
+                cooldown = this.animationConfigs.lp.cooldown;
                 attackHeight = 0.4;
                 this.changeState("lp");
                 break;
@@ -203,7 +249,7 @@ class Fighter {
             case "MP":
                 damage = 7;
                 range = 150;
-                cooldown = 16;
+                cooldown = this.animationConfigs.mp.cooldown;
                 attackHeight = 0.5;
                 this.changeState("mp");
                 break;
@@ -211,7 +257,7 @@ class Fighter {
             case "HP":
                 damage = 12;
                 range = 180;
-                cooldown = 24;
+                cooldown = this.animationConfigs.hp.cooldown;
                 attackHeight = 0.6;
                 this.changeState("hp");
                 break;
@@ -219,7 +265,7 @@ class Fighter {
             case "LK":
                 damage = 5;
                 range = 130;
-                cooldown = 12;
+                cooldown = this.animationConfigs.lk.cooldown;
                 attackHeight = 0.7;
                 this.changeState("lk");
                 break;
@@ -227,7 +273,7 @@ class Fighter {
             case "MK":
                 damage = 8;
                 range = 160;
-                cooldown = 18;
+                cooldown = this.animationConfigs.mk.cooldown;
                 attackHeight = 0.6;
                 this.changeState("mk");
                 break;
@@ -235,7 +281,7 @@ class Fighter {
             case "HK":
                 damage = 15;
                 range = 200;
-                cooldown = 30;
+                cooldown = this.animationConfigs.hk.cooldown;
                 attackHeight = 0.5;
                 this.changeState("hk");
                 break;
@@ -292,31 +338,40 @@ function preload() {
     bg = loadImage("assets/bg.png");
     console.log("Fondo cargado");
 
+    function loadFrames(folder, prefix, count, pad = 0) {
+        const frames = [];
+        for (let i = 0; i < count; i++) {
+            const index = pad > 0 ? nf(i, pad) : i;
+            frames.push(loadImage(`${folder}/${prefix}${index}.png`));
+        }
+        return frames;
+    }
+
     // PLAYER 1
     window.p1sprites = {
-        idle: loadImage("assets/p1/idle.png"),
-        walk: loadImage("assets/p1/walk.png"),
-        jump: loadImage("assets/p1/jump.png"),
-        lp: loadImage("assets/p1/lp.png"),
-        mp: loadImage("assets/p1/mp.png"),
-        hp: loadImage("assets/p1/hp.png"),
-        lk: loadImage("assets/p1/lk.png"),
-        mk: loadImage("assets/p1/mk.png"),
-        hk: loadImage("assets/p1/hk.png")
+        idle: loadFrames("assets/p1/idle", "idle_", 12, 2),
+        walk: loadFrames("assets/p1/walk", "walk_", 12, 2),
+        jump: loadFrames("assets/p1/jump", "jump_", 11, 2),
+        lp: loadFrames("assets/p1/lp", "lp_", 6, 0),
+        mp: loadFrames("assets/p1/mp", "mp_", 7, 0),
+        hp: loadFrames("assets/p1/hp", "hp_", 12, 2),
+        lk: loadFrames("assets/p1/lk", "lk_", 13, 2),
+        mk: loadFrames("assets/p1/mk", "mp_", 10, 2),
+        hk: loadFrames("assets/p1/hk", "hk_", 14, 2)
     };
     console.log("Sprites P1 cargados");
 
-    // PLAYER 2
+    // PLAYER 2 (frame único por ahora)
     window.p2sprites = {
-        idle: loadImage("assets/p2/idle.png"),
-        walk: loadImage("assets/p2/walk.png"),
-        jump: loadImage("assets/p2/jump.png"),
-        lp: loadImage("assets/p2/lp.png"),
-        mp: loadImage("assets/p2/mp.png"),
-        hp: loadImage("assets/p2/hp.png"),
-        lk: loadImage("assets/p2/lk.png"),
-        mk: loadImage("assets/p2/mk.png"),
-        hk: loadImage("assets/p2/hk.png")
+        idle: [loadImage("assets/p2/idle.png")],
+        walk: [loadImage("assets/p2/walk.png")],
+        jump: [loadImage("assets/p2/jump.png")],
+        lp: [loadImage("assets/p2/lp.png")],
+        mp: [loadImage("assets/p2/mp.png")],
+        hp: [loadImage("assets/p2/hp.png")],
+        lk: [loadImage("assets/p2/lk.png")],
+        mk: [loadImage("assets/p2/mk.png")],
+        hk: [loadImage("assets/p2/hk.png")]
     };
     console.log("Sprites P2 cargados");
 }
@@ -726,8 +781,8 @@ function nextRound() {
     p1.vy = 0;
     p1.onGround = true;
     p1.attackCooldown = 0;
+    p1.isAnimating = false;
     p1.changeState("idle");
-    p1.currentSprite = p1.sprites.idle;
     p1.facing = 1;
 
     p2.x = width - 470;
@@ -736,8 +791,8 @@ function nextRound() {
     p2.vy = 0;
     p2.onGround = true;
     p2.attackCooldown = 0;
+    p2.isAnimating = false;
     p2.changeState("idle");
-    p2.currentSprite = p2.sprites.idle;
     p2.facing = -1;
 
     console.log("=== INICIANDO ROUND " + currentRound + " ===");
