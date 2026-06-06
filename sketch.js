@@ -137,7 +137,14 @@ class Fighter {
 
             this.vy = 0;
 
-            this.onGround = true;
+            if (!this.onGround) {
+                this.onGround = true;
+                if (this.state === "jump") {
+                    this.changeState("idle");
+                }
+            } else {
+                this.onGround = true;
+            }
         }
 
         // LIMITES
