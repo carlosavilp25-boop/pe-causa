@@ -1,8 +1,10 @@
 console.log("Script cargado");
 
 let bg;
+let selznickFont;
 
 let gravity = 0.8;
+let gameState = 'menu';
 
 class Fighter {
 
@@ -46,6 +48,7 @@ class Fighter {
 
         this.state = "idle";
         this.isAnimating = false;
+        this.drawScale = 1.1;
 
         this.animationConfigs = {
             idle: { loop: true, delay: 6 },
@@ -56,8 +59,25 @@ class Fighter {
             hp: { loop: false, delay: 6, cooldown: 72 },
             lk: { loop: false, delay: 4, cooldown: 52 },
             mk: { loop: false, delay: 5, cooldown: 50 },
-            hk: { loop: false, delay: 6, cooldown: 84 }
+            hk: { loop: false, delay: 6, cooldown: 84 },
+            hit_alto: { loop: false, delay: 5 },
+            hit_medio: { loop: false, delay: 5 }
         };
+
+        this.attackBoxes = {
+            lp: { x: 0.74, y: 0.51, w: 0.08, h: 0.15, frames: [2, 3] },
+            mp: { x: 0.70, y: 0.46, w: 0.12, h: 0.17, frames: [3, 4] },
+            hp: { x: 0.72, y: 0.44, w: 0.17, h: 0.20, frames: [4, 5, 6] },
+            lk: { x: 0.79, y: 0.55, w: 0.10, h: 0.16, frames: [2, 3] },
+            mk: { x: 0.79, y: 0.52, w: 0.16, h: 0.18, frames: [3, 4] },
+            hk: { x: 0.72, y: 0.48, w: 0.22, h: 0.22, frames: [4, 5, 6] }
+        };
+
+        this.isHit = false;
+        this.hitState = null;
+        this.hasHit = false;
+        this.activeAttackBox = null;
+        this.receiveHitBox = null;
 
         // Hit effect (onomatopeya)
         this.hitText = "";
@@ -78,7 +98,7 @@ class Fighter {
             this.facing = -1;
         }
     }
-    update() {
+    update(enemy) {
 
         this.vx = 0;
 
@@ -131,9 +151,10 @@ class Fighter {
         this.y += this.vy;
 
         // PISO
-        if (this.y >= height - 320) {
+        const groundY = height - this.h;
+        if (this.y >= groundY) {
 
-            this.y = height - 320;
+            this.y = groundY;
 
             this.vy = 0;
 
@@ -155,25 +176,51 @@ class Fighter {
             this.attackCooldown--;
         }
 
+        this.updateReceiveHitBox();
         this.updateAnimation();
+        this.processAttackHit(enemy);
     }
     
     draw() {
         push();
 
+        const drawW = this.w * this.drawScale;
+        const drawH = this.h * this.drawScale;
+        const drawX = this.x - (drawW - this.w) / 2;
+        const drawY = this.y - (drawH - this.h) / 2;
+
         if (this.facing === -1) {
-            translate(this.x + this.w, this.y);
+            translate(drawX + drawW, drawY);
             scale(-1, 1);
-            image(this.currentFrame, 0, 0, this.w, this.h);
+            image(this.currentFrame, 0, 0, drawW, drawH);
         } else {
-            image(this.currentFrame, this.x, this.y, this.w, this.h);
+            image(this.currentFrame, drawX, drawY, drawW, drawH);
         }
 
         pop();
 
+        if (this.activeAttackBox) {
+            push();
+            noFill();
+            stroke(255, 0, 0, 180);
+            strokeWeight(4);
+            rect(this.activeAttackBox.x, this.activeAttackBox.y, this.activeAttackBox.w, this.activeAttackBox.h);
+            pop();
+        }
+
+        if (this.receiveHitBox) {
+            push();
+            noFill();
+            stroke(0, 180, 255, 180);
+            strokeWeight(3);
+            rect(this.receiveHitBox.x, this.receiveHitBox.y, this.receiveHitBox.w, this.receiveHitBox.h);
+            pop();
+        }
+
         // Mostrar onomatopeya al recibir un golpe (fade)
         if (this.hitTimer > 0) {
             push();
+            textFont(selznickFont);
             textSize(32);
             textAlign(CENTER, BOTTOM);
             stroke(0);
@@ -202,6 +249,10 @@ class Fighter {
                 // Animación no-looping terminada
                 this.frameIndex = this.currentFrames.length - 1;
                 this.isAnimating = false;
+                if (this.state === 'hit_alto' || this.state === 'hit_medio') {
+                    this.isHit = false;
+                    this.hitState = null;
+                }
                 
                 // Solo cambiar a idle cuando la animación termina
                 if (this.onGround) {
@@ -217,8 +268,13 @@ class Fighter {
         this.currentFrame = this.currentFrames[this.frameIndex];
     }
 
-    changeState(state) {
-        if (this.state === state) return;
+    changeState(state, force = false) {
+        if (this.state === state && !force) return;
+
+        // Idle siempre puede ser interrumpido por otra animación.
+        if (this.state === "idle" && state !== "idle") {
+            this.isAnimating = false;
+        }
 
         this.state = state;
         this.currentFrames = this.sprites[state] || this.sprites.idle;
@@ -227,98 +283,118 @@ class Fighter {
         this.frameDelay = this.animationConfigs[state]?.delay || 6;
         this.currentFrame = this.currentFrames[0];
         
-        // Marcar que está animando si es una animación de ataque o salto
+        // Marcar que está animando si es una animación de ataque o salto o hit
         let config = this.animationConfigs[state] || { loop: true };
-        if (!config.loop) {
-            this.isAnimating = true;
+        this.isAnimating = !config.loop;
+    }
+
+    receiveHit(attackHeight) {
+        this.isHit = true;
+        this.hitState = attackHeight <= 0.5 ? 'hit_alto' : 'hit_medio';
+        this.changeState(this.hitState);
+    }
+
+    processAttackHit(enemy) {
+        this.activeAttackBox = null;
+
+        if (!enemy || !this.attackBoxes[this.state] || this.hasHit) return;
+
+        const config = this.attackBoxes[this.state];
+        if (!config.frames.includes(this.frameIndex)) return;
+
+        const boxWidth = this.w * config.w;
+        const boxHeight = this.h * config.h;
+        const relativeX = this.w * config.x;
+        const boxX = this.facing === 1
+            ? this.x + relativeX
+            : this.x + this.w - relativeX - boxWidth;
+        const boxY = this.y + this.h * config.y;
+
+        this.activeAttackBox = { x: boxX, y: boxY, w: boxWidth, h: boxHeight };
+
+        const enemyHitBox = enemy.receiveHitBox || {
+            x: enemy.x,
+            y: enemy.y + enemy.h * 0.15,
+            w: enemy.w,
+            h: enemy.h * 0.7
+        };
+
+        if (this.checkOverlap(this.activeAttackBox, enemyHitBox)) {
+            this.hasHit = true;
+            const damageMap = {
+                lp: 4,
+                mp: 7,
+                hp: 12,
+                lk: 5,
+                mk: 8,
+                hk: 15
+            };
+            const damage = damageMap[this.state] || 0;
+            enemy.health -= damage;
+            console.log(this.state + " ¡GOLPE! Daño: " + damage);
+            const onos = ["¡PAF!", "¡BAM!", "¡PUM!", "¡ZAS!", "¡BOOM!", "¡ZAC!"];
+            enemy.hitText = random(onos);
+            enemy.hitTimer = 45;
+            enemy.hitTextAlpha = 255;
+            enemy.receiveHit(config.y);
         }
+    }
+
+    checkOverlap(a, b) {
+        return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    updateReceiveHitBox() {
+        const paddingX = this.w * 0.26;
+        const paddingY = this.h * 0.08;
+        this.receiveHitBox = {
+            x: this.x + paddingX,
+            y: this.y + paddingY,
+            w: this.w - paddingX * 2,
+            h: this.h - paddingY * 2
+        };
     }
 
     attack(enemy, type) {
         // Permitir nuevos ataques incluso si hay cooldown, solo si están animando
         if (this.attackCooldown > 0 && !this.isAnimating) return;
 
-        let damage = 0;
-        let range = 0;
         let cooldown = 0;
-        let attackHeight = 0.5; // Proporción vertical de donde golpea (0.5 = centro)
 
         switch(type){
 
             case "LP":
-                damage = 4;
-                range = 120;
                 cooldown = this.animationConfigs.lp.cooldown;
-                attackHeight = 0.4;
                 this.changeState("lp");
                 break;
 
             case "MP":
-                damage = 7;
-                range = 150;
                 cooldown = this.animationConfigs.mp.cooldown;
-                attackHeight = 0.5;
                 this.changeState("mp");
                 break;
 
             case "HP":
-                damage = 12;
-                range = 180;
                 cooldown = this.animationConfigs.hp.cooldown;
-                attackHeight = 0.6;
                 this.changeState("hp");
                 break;
 
             case "LK":
-                damage = 5;
-                range = 130;
                 cooldown = this.animationConfigs.lk.cooldown;
-                attackHeight = 0.7;
                 this.changeState("lk");
                 break;
 
             case "MK":
-                damage = 8;
-                range = 160;
                 cooldown = this.animationConfigs.mk.cooldown;
-                attackHeight = 0.6;
                 this.changeState("mk");
                 break;
 
             case "HK":
-                damage = 15;
-                range = 200;
                 cooldown = this.animationConfigs.hk.cooldown;
-                attackHeight = 0.5;
                 this.changeState("hk");
                 break;
         }
 
-        // Posición del ataque basada en la dirección
-        let attackX = this.x + this.w / 2 + (this.facing * range);
-        let attackY = this.y + this.h * attackHeight;
-
-        // Posición central del enemigo
-        let enemyX = enemy.x + enemy.w / 2;
-        let enemyY = enemy.y + enemy.h / 2;
-
-        // Detección robusta: el enemigo debe estar ENFRENTE y DENTRO del rango horizontal y vertical
-        let relativeX = enemyX - (this.x + this.w / 2);
-        let inFront = (this.facing === 1 && relativeX > 0) || (this.facing === -1 && relativeX < 0);
-        let withinRange = Math.abs(relativeX) <= range;
-        let verticalTolerance = this.h * 0.5; // tolerancia vertical para el golpe
-        let withinVertical = Math.abs(enemyY - attackY) <= verticalTolerance;
-
-        if (inFront && withinRange && withinVertical) {
-            enemy.health -= damage;
-            console.log(type + " ¡GOLPE! Daño: " + damage);
-            // Onomatopeya al recibir daño
-            let onos = ["¡PAF!", "¡BAM!", "¡PUM!", "¡ZAS!", "¡BOOM!", "¡ZAC!"];
-            enemy.hitText = random(onos);
-            enemy.hitTimer = 45; // frames
-            enemy.hitTextAlpha = 255;
-        }
-
+        this.hasHit = false;
         this.attackCooldown = cooldown;
     }
 }
@@ -341,14 +417,18 @@ let roundEndTimer = 0; // Contador para pasar al siguiente round después de 2 s
 function preload() {
     console.log("Preload iniciado");
     
+    // Cargar font local
+    selznickFont = loadFont("assets/SelznickRemixNf-Dd3D.ttf");
+
     // Cargar fondo
     bg = loadImage("assets/bg.png");
     console.log("Fondo cargado");
 
-    function loadFrames(folder, prefix, count, pad = 0) {
+    function loadFrames(folder, prefix, count, pad = 0, start = 0) {
         const frames = [];
         for (let i = 0; i < count; i++) {
-            const index = pad > 0 ? nf(i, pad) : i;
+            const frameIndex = i + start;
+            const index = pad > 0 ? nf(frameIndex, pad) : frameIndex;
             frames.push(loadImage(`${folder}/${prefix}${index}.png`));
         }
         return frames;
@@ -357,28 +437,32 @@ function preload() {
     // PLAYER 1
     window.p1sprites = {
         idle: loadFrames("assets/p1/idle", "idle_", 12, 2),
-        walk: loadFrames("assets/p1/walk", "walk_", 12, 2),
+        walk: loadFrames("assets/p1/walk", "walk_", 12, 2, 1),
         jump: loadFrames("assets/p1/jump", "jump_", 11, 2),
-        lp: loadFrames("assets/p1/lp", "lp_", 6, 0),
-        mp: loadFrames("assets/p1/mp", "mp_", 7, 0),
-        hp: loadFrames("assets/p1/hp", "hp_", 12, 2),
-        lk: loadFrames("assets/p1/lk", "lk_", 13, 2),
-        mk: loadFrames("assets/p1/mk", "mp_", 10, 2),
-        hk: loadFrames("assets/p1/hk", "hk_", 14, 2)
+        lp: loadFrames("assets/p1/lp", "lp_", 9, 0),
+        mp: loadFrames("assets/p1/mp", "mp_", 8, 0),
+        hp: loadFrames("assets/p1/hp", "hp_", 12, 2, 1),
+        lk: loadFrames("assets/p1/lk", "lk_", 14, 2),
+        mk: loadFrames("assets/p1/mk", "mk_", 11, 2),
+        hk: loadFrames("assets/p1/hk", "hk_", 14, 2),
+        hit_alto: loadFrames("assets/p1/hit_alto", "hit_", 9, 2, 1),
+        hit_medio: loadFrames("assets/p1/hit_medio", "hit mid_", 9, 2, 1)
     };
     console.log("Sprites P1 cargados");
 
-    // PLAYER 2 (frame único por ahora)
+    // PLAYER 2 - animaciones por estado (cada acción usa un arreglo de frames)
     window.p2sprites = {
-        idle: [loadImage("assets/p2/idle.png")],
-        walk: [loadImage("assets/p2/walk.png")],
-        jump: [loadImage("assets/p2/jump.png")],
-        lp: [loadImage("assets/p2/lp.png")],
-        mp: [loadImage("assets/p2/mp.png")],
-        hp: [loadImage("assets/p2/hp.png")],
-        lk: [loadImage("assets/p2/lk.png")],
-        mk: [loadImage("assets/p2/mk.png")],
-        hk: [loadImage("assets/p2/hk.png")]
+        idle: loadFrames("assets/p2/idle", "idle_", 15, 2),
+        walk: loadFrames("assets/p2/walk", "walk_", 6, 0, 1),
+        jump: loadFrames("assets/p2/jump", "jump_", 7, 0, 1),
+        lp: loadFrames("assets/p2/lp", "lp_", 7, 0),
+        mp: loadFrames("assets/p2/mp", "mp_", 17, 2),
+        hp: loadFrames("assets/p2/hp", "hp_", 13, 2),
+        lk: loadFrames("assets/p2/lk", "lk_", 17, 2),
+        mk: loadFrames("assets/p2/mk", "mk_", 15, 2),
+        hk: loadFrames("assets/p2/hk", "hk_", 13, 2),
+        hit_alto: loadFrames("assets/p2/hit_alto", "hit_", 8, 0, 1),
+        hit_medio: loadFrames("assets/p2/hit_medio", "hit mid_", 9, 2, 1)
     };
     console.log("Sprites P2 cargados");
 }
@@ -390,23 +474,28 @@ function setup() {
     console.log("p1sprites:", window.p1sprites);
     console.log("p2sprites:", window.p2sprites);
     console.log("bg:", bg);
+
+    const startButton = select('#startButton');
+    if (startButton) {
+        startButton.mousePressed(startGame);
+    }
     
     // PLAYER 1 - Izquierda
-    p1 = new Fighter(250, 350, window.p1sprites, {
+    p1 = new Fighter(250, 300, window.p1sprites, {
         left: 65,  // A
         right: 68, // D
         jump: 87,  // W
         LP: 82, MP: 84, HP: 89,   // R, T, Y
-        LK: 90, MK: 88, HK: 67    // Z, X, C
+        LK: 70, MK: 71, HK: 72    // F, G, H
     });
     
     // PLAYER 2 - Derecha
-    p2 = new Fighter(width - 470, 350, window.p2sprites, {
+    p2 = new Fighter(width - 470, 300, window.p2sprites, {
         left: 37,  // LEFT ARROW
         right: 39, // RIGHT ARROW
         jump: 38,  // UP ARROW
         LP: 73, MP: 79, HP: 80,   // I, O, P
-        LK: 75, MK: 76, HK: 186   // K, L, ;
+        LK: 75, MK: 76, HK: 74    // K, L, J
     });
     
     console.log("Jugadores creados");
@@ -414,10 +503,24 @@ function setup() {
 
 function draw() {
 
+    if (gameState === 'menu') {
+        background(0);
+        if (bg) {
+            const bgScale = 1.06;
+            const bgWidth = width * bgScale;
+            const bgHeight = height * bgScale;
+            image(bg, -(bgWidth - width) / 2, -(bgHeight - height) / 2, bgWidth, bgHeight);
+        }
+        return;
+    }
+
     background(255);
 
     if (bg) {
-        image(bg, 0, 0, width, height);
+        const bgScale = 1.06;
+        const bgWidth = width * bgScale;
+        const bgHeight = height * bgScale;
+        image(bg, -(bgWidth - width) / 2, -(bgHeight - height) / 2, bgWidth, bgHeight);
     } else {
         fill(100);
         textSize(20);
@@ -436,8 +539,8 @@ function draw() {
 
         // Mostrar mensajes de fin de round
         if (!roundEnded) {
-            p1.update();
-            p2.update();
+            p1.update(p2);
+            p2.update(p1);
 
             // Asegurar que siempre miren hacia el otro
             p1.orientTowards(p2);
@@ -659,7 +762,17 @@ function drawHUD() {
 }
 
 
+function startGame() {
+    const menu = document.getElementById('menu-screen');
+    if (menu) {
+        menu.style.display = 'none';
+    }
+    gameState = 'playing';
+}
+
 function keyPressed() {
+
+    if (gameState !== 'playing') return;
 
     // PLAYER 1
     if (keyCode === p1.controls.LP) p1.attack(p2, "LP");
@@ -783,7 +896,7 @@ function nextRound() {
     p2.health = 100;
     // Restaurar posiciones, velocidades y estados a valores iniciales
     p1.x = 250;
-    p1.y = 350;
+    p1.y = 300;
     p1.vx = 0;
     p1.vy = 0;
     p1.onGround = true;
@@ -793,7 +906,7 @@ function nextRound() {
     p1.facing = 1;
 
     p2.x = width - 470;
-    p2.y = 350;
+    p2.y = 300;
     p2.vx = 0;
     p2.vy = 0;
     p2.onGround = true;

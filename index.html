@@ -10,9 +10,21 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
 </head>
 <body>
-  let swingSound;
-let hitSound;
-let koSound;
+  <div id="menu-screen" class="menu-screen">
+    <div class="menu-card">
+      <img src="assets/logo.png" alt="Skullgirls pj5" class="menu-logo" />
+      <div class="menu-text">Presiona START para comenzar</div>
+      <button id="startButton" class="menu-button">START</button>
+      <div class="menu-instructions">
+        <p><strong>P1:</strong> A / D mover, W saltar</p>
+        <p><strong>Puños:</strong> R T Y</p>
+        <p><strong>Patadas:</strong> F G H</p>
+        <p><strong>P2:</strong> ← → mover, ↑ saltar</p>
+        <p><strong>Puños:</strong> I O P</p>
+        <p><strong>Patadas:</strong> K L J</p>
+      </div>
+    </div>
+  </div>
   <script src="sketch.js"></script>
 </body>
 </html>
