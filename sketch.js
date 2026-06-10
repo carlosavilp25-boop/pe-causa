@@ -2,9 +2,37 @@ console.log("Script cargado");
 
 let bg;
 let selznickFont;
+let fukuaPort;
+let squiglyPort;
 
 let gravity = 0.8;
 let gameState = 'menu';
+
+let menuMusic;
+let stageMusic;
+let hitSounds = [];
+
+let bgOffsetY = 0; // <- mueve el fondo en Y (positivo = baja, negativo = sube)
+
+// Presiona Q en juego para mostrar/ocultar cajas de debug
+let debugBoxes = true;
+
+// Cámara dinámica
+let currentZoom = 1.35;   // zoom actual (interpolado suavemente)
+const ZOOM_MAX  = 1.45;   // zoom cuando los personajes están muy cerca
+const ZOOM_MIN  = 1.10;   // zoom cuando están muy lejos
+const ZOOM_LERP = 0.04;   // velocidad de transición
+
+// Cámara vertical — desplaza TODO el mundo (fondo + personajes) hacia abajo
+// cuando saltan, para que el piso siempre quede visible abajo
+let camY        = 0;      // valor actual interpolado
+const CAM_LERP  = 0.07;   // suavidad del pan vertical
+
+// Zoom dinámico de personajes según distancia
+let charScale        = 1.5;   // escala actual de los personajes (interpolada)
+const CHAR_SCALE_MAX = 1.6;   // escala cuando están muy cerca
+const CHAR_SCALE_MIN = 1.1;   // escala cuando están muy lejos
+const CHAR_LERP      = 0.04;  // suavidad del cambio de tamaño
 
 class Fighter {
 
@@ -21,7 +49,7 @@ class Fighter {
 
         this.speed = 5;
 
-        this.jumpForce = -15;
+        this.jumpForce = -22;
 
         this.onGround = false;
 
@@ -48,7 +76,11 @@ class Fighter {
 
         this.state = "idle";
         this.isAnimating = false;
-        this.drawScale = 1.1;
+        this.drawScale = 1.5;
+
+        // Temblor al recibir golpe
+        this.shakeTimer    = 0;   // frames que dura el temblor
+        this.shakeIntensity = 0;  // magnitud máxima en px
 
         this.animationConfigs = {
             idle: { loop: true, delay: 6 },
@@ -61,7 +93,8 @@ class Fighter {
             mk: { loop: false, delay: 5, cooldown: 50 },
             hk: { loop: false, delay: 6, cooldown: 84 },
             hit_alto: { loop: false, delay: 5 },
-            hit_medio: { loop: false, delay: 5 }
+            hit_medio: { loop: false, delay: 5 },
+            ko: { loop: false, delay: 6 }
         };
 
         this.attackBoxes = {
@@ -88,7 +121,6 @@ class Fighter {
     // Orienta al personaje mirando hacia el enemigo
     orientTowards(enemy) {
         if (!enemy) return;
-        // Centro X de cada uno
         let myCenter = this.x + this.w / 2;
         let enemyCenter = enemy.x + enemy.w / 2;
 
@@ -98,43 +130,57 @@ class Fighter {
             this.facing = -1;
         }
     }
+
     update(enemy) {
+
+        if (this.health <= 0) {
+            if (this.state !== "ko") {
+                this.changeState("ko", true);
+            }
+            this.vx = 0;
+            this.hasHit = false;
+            this.attackCooldown = 0;
+            this.activeAttackBox = null;
+
+            if (!this.onGround) {
+                this.vy += gravity;
+                this.y += this.vy;
+                const drawH = this.h * this.drawScale;
+                const groundY = height - (drawH + this.h) / 2;
+                if (this.y >= groundY) {
+                    this.y = groundY;
+                    this.vy = 0;
+                    this.onGround = true;
+                }
+            }
+
+            this.updateReceiveHitBox();
+            this.updateAnimation();
+            return;
+        }
 
         this.vx = 0;
 
         let moving = false;
 
-        // IZQUIERDA
         if (keyIsDown(this.controls.left)) {
-
             this.vx = -this.speed;
-
             this.facing = -1;
-
             moving = true;
         }
 
-        // DERECHA
         if (keyIsDown(this.controls.right)) {
-
             this.vx = this.speed;
-
             this.facing = 1;
-
             moving = true;
         }
 
-        // SALTO
         if (keyIsDown(this.controls.jump) && this.onGround) {
-
             this.vy = this.jumpForce;
-
             this.onGround = false;
-
             this.changeState("jump");
         }
 
-        // ESTADO WALK - Solo cambiar si no estamos atacando
         if (!this.isAnimating) {
             if (moving && this.onGround && this.attackCooldown <= 0) {
                 this.changeState("walk");
@@ -143,19 +189,14 @@ class Fighter {
             }
         }
 
-        // FISICA
         this.x += this.vx;
-
         this.vy += gravity;
-
         this.y += this.vy;
 
-        // PISO
-        const groundY = height - this.h;
+        const drawH = this.h * this.drawScale;
+        const groundY = height - (drawH + this.h) / 2;
         if (this.y >= groundY) {
-
             this.y = groundY;
-
             this.vy = 0;
 
             if (!this.onGround) {
@@ -168,10 +209,8 @@ class Fighter {
             }
         }
 
-        // LIMITES
         this.x = constrain(this.x, 0, width - this.w);
 
-        // COOLDOWN
         if (this.attackCooldown > 0) {
             this.attackCooldown--;
         }
@@ -180,14 +219,25 @@ class Fighter {
         this.updateAnimation();
         this.processAttackHit(enemy);
     }
-    
+
     draw() {
         push();
 
+        // Temblor: offset aleatorio que se aplica SOLO al dibujo, no a la posición real
+        let shakeX = 0;
+        let shakeY = 0;
+        if (this.shakeTimer > 0) {
+            shakeX = random(-this.shakeIntensity, this.shakeIntensity);
+            shakeY = random(-this.shakeIntensity, this.shakeIntensity);
+            this.shakeTimer--;
+            // Reducir intensidad progresivamente
+            this.shakeIntensity = this.shakeIntensity * 0.88;
+        }
+
         const drawW = this.w * this.drawScale;
         const drawH = this.h * this.drawScale;
-        const drawX = this.x - (drawW - this.w) / 2;
-        const drawY = this.y - (drawH - this.h) / 2;
+        const drawX = this.x - (drawW - this.w) / 2 + shakeX;
+        const drawY = this.y - (drawH - this.h) / 2 + shakeY;
 
         if (this.facing === -1) {
             translate(drawX + drawW, drawY);
@@ -199,25 +249,30 @@ class Fighter {
 
         pop();
 
-        if (this.activeAttackBox) {
+        if (this.activeAttackBox && debugBoxes) {
             push();
             noFill();
-            stroke(255, 0, 0, 180);
-            strokeWeight(4);
+            stroke(255, 0, 0, 200);
+            strokeWeight(3);
             rect(this.activeAttackBox.x, this.activeAttackBox.y, this.activeAttackBox.w, this.activeAttackBox.h);
+            // Etiqueta con estado y frame actual
+            fill(255, 0, 0, 220);
+            noStroke();
+            textSize(14);
+            textAlign(LEFT, BOTTOM);
+            text(this.state + " f:" + this.frameIndex, this.activeAttackBox.x, this.activeAttackBox.y - 4);
             pop();
         }
 
-        if (this.receiveHitBox) {
+        if (this.receiveHitBox && debugBoxes) {
             push();
             noFill();
-            stroke(0, 180, 255, 180);
+            stroke(0, 180, 255, 200);
             strokeWeight(3);
             rect(this.receiveHitBox.x, this.receiveHitBox.y, this.receiveHitBox.w, this.receiveHitBox.h);
             pop();
         }
 
-        // Mostrar onomatopeya al recibir un golpe (fade)
         if (this.hitTimer > 0) {
             push();
             textFont(selznickFont);
@@ -246,16 +301,14 @@ class Fighter {
             if (config.loop) {
                 this.frameIndex = 0;
             } else {
-                // Animación no-looping terminada
                 this.frameIndex = this.currentFrames.length - 1;
                 this.isAnimating = false;
                 if (this.state === 'hit_alto' || this.state === 'hit_medio') {
                     this.isHit = false;
                     this.hitState = null;
                 }
-                
-                // Solo cambiar a idle cuando la animación termina
-                if (this.onGround) {
+
+                if (this.state !== 'ko' && this.onGround) {
                     if (this.vx !== 0) {
                         this.changeState("walk");
                     } else {
@@ -271,19 +324,21 @@ class Fighter {
     changeState(state, force = false) {
         if (this.state === state && !force) return;
 
-        // Idle siempre puede ser interrumpido por otra animación.
         if (this.state === "idle" && state !== "idle") {
             this.isAnimating = false;
         }
 
         this.state = state;
         this.currentFrames = this.sprites[state] || this.sprites.idle;
+        if (!this.currentFrames || this.currentFrames.length === 0) {
+            this.currentFrames = this.sprites.idle;
+            this.state = "idle";
+        }
         this.frameIndex = 0;
         this.frameTimer = 0;
-        this.frameDelay = this.animationConfigs[state]?.delay || 6;
-        this.currentFrame = this.currentFrames[0];
-        
-        // Marcar que está animando si es una animación de ataque o salto o hit
+        this.frameDelay = this.animationConfigs[this.state]?.delay || 6;
+        this.currentFrame = this.currentFrames[0] || null;
+
         let config = this.animationConfigs[state] || { loop: true };
         this.isAnimating = !config.loop;
     }
@@ -292,6 +347,10 @@ class Fighter {
         this.isHit = true;
         this.hitState = attackHeight <= 0.5 ? 'hit_alto' : 'hit_medio';
         this.changeState(this.hitState);
+
+        // Iniciar temblor (independiente de la animación)
+        this.shakeTimer     = 18;   // duración en frames
+        this.shakeIntensity = 9;    // intensidad inicial en px
     }
 
     processAttackHit(enemy) {
@@ -302,13 +361,19 @@ class Fighter {
         const config = this.attackBoxes[this.state];
         if (!config.frames.includes(this.frameIndex)) return;
 
-        const boxWidth = this.w * config.w;
-        const boxHeight = this.h * config.h;
-        const relativeX = this.w * config.x;
+        // Usar dimensiones escaladas para que el attackbox coincida con el sprite
+        const sw       = this.w * this.drawScale;
+        const sh       = this.h * this.drawScale;
+        const originX  = this.x - (sw - this.w) / 2;
+        const originY  = this.y - (sh - this.h) / 2;
+
+        const boxWidth  = sw * config.w;
+        const boxHeight = sh * config.h;
+        const relativeX = sw * config.x;
         const boxX = this.facing === 1
-            ? this.x + relativeX
-            : this.x + this.w - relativeX - boxWidth;
-        const boxY = this.y + this.h * config.y;
+            ? originX + relativeX
+            : originX + sw - relativeX - boxWidth;
+        const boxY = originY + sh * config.y;
 
         this.activeAttackBox = { x: boxX, y: boxY, w: boxWidth, h: boxHeight };
 
@@ -337,6 +402,7 @@ class Fighter {
             enemy.hitTimer = 45;
             enemy.hitTextAlpha = 255;
             enemy.receiveHit(config.y);
+            playRandomHitSound();
         }
     }
 
@@ -345,49 +411,48 @@ class Fighter {
     }
 
     updateReceiveHitBox() {
-        const paddingX = this.w * 0.26;
-        const paddingY = this.h * 0.08;
+        // La hitbox escala junto con el sprite visual
+        const sw       = this.w * this.drawScale;
+        const sh       = this.h * this.drawScale;
+        const originX  = this.x - (sw - this.w) / 2;
+        const originY  = this.y - (sh - this.h) / 2;
+        // paddingX mayor = hitbox más angosta horizontalmente (ajusta 0.32 a gusto)
+        const paddingX = sw * 0.32;
+        const paddingY = sh * 0.08;
         this.receiveHitBox = {
-            x: this.x + paddingX,
-            y: this.y + paddingY,
-            w: this.w - paddingX * 2,
-            h: this.h - paddingY * 2
+            x: originX + paddingX,
+            y: originY + paddingY,
+            w: sw - paddingX * 2,
+            h: sh - paddingY * 2
         };
     }
 
     attack(enemy, type) {
-        // Permitir nuevos ataques incluso si hay cooldown, solo si están animando
         if (this.attackCooldown > 0 && !this.isAnimating) return;
 
         let cooldown = 0;
 
         switch(type){
-
             case "LP":
                 cooldown = this.animationConfigs.lp.cooldown;
                 this.changeState("lp");
                 break;
-
             case "MP":
                 cooldown = this.animationConfigs.mp.cooldown;
                 this.changeState("mp");
                 break;
-
             case "HP":
                 cooldown = this.animationConfigs.hp.cooldown;
                 this.changeState("hp");
                 break;
-
             case "LK":
                 cooldown = this.animationConfigs.lk.cooldown;
                 this.changeState("lk");
                 break;
-
             case "MK":
                 cooldown = this.animationConfigs.mk.cooldown;
                 this.changeState("mk");
                 break;
-
             case "HK":
                 cooldown = this.animationConfigs.hk.cooldown;
                 this.changeState("hk");
@@ -403,26 +468,33 @@ let p1;
 let p2;
 
 let timer = 99;
-let timerCounter = 0; // Contador para decrementar el timer cada segundo (60 frames)
+let timerCounter = 0;
 
 // SISTEMA DE ROUNDS
 let currentRound = 1;
-let maxRounds = 3; // Mejor de 3 (primero en ganar 2)
+let maxRounds = 3;
 let p1RoundsWon = 0;
 let p2RoundsWon = 0;
 let roundEnded = false;
 let roundWinner = null;
-let roundEndTimer = 0; // Contador para pasar al siguiente round después de 2 segundos
+let roundEndTimer = 0;
 
 function preload() {
     console.log("Preload iniciado");
-    
-    // Cargar font local
+
     selznickFont = loadFont("assets/SelznickRemixNf-Dd3D.ttf");
 
-    // Cargar fondo
     bg = loadImage("assets/bg.png");
-    console.log("Fondo cargado");
+    fukuaPort = loadImage("assets/Fukua port_Capa 1.png");
+    squiglyPort = loadImage("assets/Squigly port_Capa 1.png");
+
+    menuMusic = loadSound("sounds/Menu.mp3");
+    stageMusic = loadSound("sounds/Stage.mp3");
+    hitSounds = [
+        loadSound("sounds/Hit.mp3"),
+        loadSound("sounds/hit .mp3")
+    ];
+    console.log("Fondo y sonidos cargados");
 
     function loadFrames(folder, prefix, count, pad = 0, start = 0) {
         const frames = [];
@@ -446,11 +518,12 @@ function preload() {
         mk: loadFrames("assets/p1/mk", "mk_", 11, 2),
         hk: loadFrames("assets/p1/hk", "hk_", 14, 2),
         hit_alto: loadFrames("assets/p1/hit_alto", "hit_", 9, 2, 1),
-        hit_medio: loadFrames("assets/p1/hit_medio", "hit mid_", 9, 2, 1)
+        hit_medio: loadFrames("assets/p1/hit_medio", "hit mid_", 9, 2, 1),
+        ko: loadFrames("assets/p1/KO", "k.o_", 22, 2, 1)
     };
     console.log("Sprites P1 cargados");
 
-    // PLAYER 2 - animaciones por estado (cada acción usa un arreglo de frames)
+    // PLAYER 2
     window.p2sprites = {
         idle: loadFrames("assets/p2/idle", "idle_", 15, 2),
         walk: loadFrames("assets/p2/walk", "walk_", 6, 0, 1),
@@ -462,42 +535,46 @@ function preload() {
         mk: loadFrames("assets/p2/mk", "mk_", 15, 2),
         hk: loadFrames("assets/p2/hk", "hk_", 13, 2),
         hit_alto: loadFrames("assets/p2/hit_alto", "hit_", 8, 0, 1),
-        hit_medio: loadFrames("assets/p2/hit_medio", "hit mid_", 9, 2, 1)
+        hit_medio: loadFrames("assets/p2/hit_medio", "hit mid_", 9, 2, 1),
+        ko: loadFrames("assets/p2/KO", "k.o_", 7, 2, 1)
     };
     console.log("Sprites P2 cargados");
 }
 
 function setup() {
     createCanvas(1600, 900);
-    
+
     console.log("Setup iniciado");
-    console.log("p1sprites:", window.p1sprites);
-    console.log("p2sprites:", window.p2sprites);
-    console.log("bg:", bg);
 
     const startButton = select('#startButton');
     if (startButton) {
         startButton.mousePressed(startGame);
     }
-    
+
+    if (menuMusic) {
+        menuMusic.setLoop(true);
+        menuMusic.setVolume(0.45);
+        menuMusic.loop();
+    }
+
     // PLAYER 1 - Izquierda
-    p1 = new Fighter(250, 300, window.p1sprites, {
+    p1 = new Fighter(200, 90, window.p1sprites, {
         left: 65,  // A
         right: 68, // D
         jump: 87,  // W
-        LP: 82, MP: 84, HP: 89,   // R, T, Y
-        LK: 70, MK: 71, HK: 72    // F, G, H
+        LP: 82, MP: 84, HP: 89,
+        LK: 70, MK: 71, HK: 72
     });
-    
+
     // PLAYER 2 - Derecha
-    p2 = new Fighter(width - 470, 300, window.p2sprites, {
-        left: 37,  // LEFT ARROW
-        right: 39, // RIGHT ARROW
-        jump: 38,  // UP ARROW
-        LP: 73, MP: 79, HP: 80,   // I, O, P
-        LK: 75, MK: 76, HK: 74    // K, L, J
+    p2 = new Fighter(width - 500, 90, window.p2sprites, {
+        left: 37,
+        right: 39,
+        jump: 38,
+        LP: 73, MP: 79, HP: 80,
+        LK: 75, MK: 76, HK: 74
     });
-    
+
     console.log("Jugadores creados");
 }
 
@@ -505,87 +582,100 @@ function draw() {
 
     if (gameState === 'menu') {
         background(0);
-        if (bg) {
-            const bgScale = 1.06;
-            const bgWidth = width * bgScale;
-            const bgHeight = height * bgScale;
-            image(bg, -(bgWidth - width) / 2, -(bgHeight - height) / 2, bgWidth, bgHeight);
-        }
+        if (bg) image(bg, 0, 0, width, height);
         return;
     }
 
-    background(255);
+    background(20, 20, 20);
 
-    if (bg) {
-        const bgScale = 1.06;
-        const bgWidth = width * bgScale;
-        const bgHeight = height * bgScale;
-        image(bg, -(bgWidth - width) / 2, -(bgHeight - height) / 2, bgWidth, bgHeight);
-    } else {
-        fill(100);
-        textSize(20);
-        text("BG no cargó", 20, 30);
+    // ── 1. Calcular zoom de fondo (distancia entre personajes) ──────────────
+    if (p1 && p2) {
+        const dist      = abs((p2.x + p2.w / 2) - (p1.x + p1.w / 2));
+        const maxDist   = width * 0.75;
+        let targetZoom  = map(dist, 0, maxDist, ZOOM_MAX, ZOOM_MIN);
+        targetZoom      = constrain(targetZoom, ZOOM_MIN, ZOOM_MAX);
+        currentZoom     = lerp(currentZoom, targetZoom, ZOOM_LERP);
+
+        // ── 2. Calcular zoom de personajes (misma distancia) ────────────────
+        let targetChar  = map(dist, 0, maxDist, CHAR_SCALE_MAX, CHAR_SCALE_MIN);
+        targetChar      = constrain(targetChar, CHAR_SCALE_MIN, CHAR_SCALE_MAX);
+        charScale       = lerp(charScale, targetChar, CHAR_LERP);
+        // Propagar drawScale a cada fighter
+        p1.drawScale    = charScale;
+        p2.drawScale    = charScale;
+
+        // ── 3. Cámara vertical: bajar el mundo cuando alguien salta ─────────
+        // "Rise" = cuántos px por encima del suelo está el personaje
+        const groundY   = height - (p1.h * charScale + p1.h) / 2;
+        const p1Rise    = max(0, groundY - p1.y);
+        const p2Rise    = max(0, groundY - p2.y);
+        const maxRise   = max(p1Rise, p2Rise);
+        // Cuando hay salto → camY positivo → translate baja el mundo
+        // (el personaje sigue visualmente hacia arriba pero el piso baja con él)
+        let targetCamY  = map(maxRise, 0, groundY * 0.55, 0, 110);
+        targetCamY      = constrain(targetCamY, 0, 110);
+        camY            = lerp(camY, targetCamY, CAM_LERP);
     }
 
+    // ── 4. Dibujar fondo con translate de cámara ────────────────────────────
+    push();
+    translate(0, camY);   // bajar el mundo entero
+
+    if (bg) {
+        const bgW = width  * currentZoom;
+        const bgH = height * currentZoom;
+        const bgX = (width - bgW) / 2;
+        // Borde inferior del fondo siempre pegado al piso de pantalla
+        // (que en coordenadas del mundo = height, antes del translate)
+        const bgY = height - bgH + bgOffsetY;
+        image(bg, bgX, bgY, bgW, bgH);
+    }
+
+    // ── 5. Actualizar y dibujar personajes (dentro del translate) ───────────
     if (p1 && p2) {
-        // DECREMENTAR TIMER
         timerCounter++;
-        if (timerCounter >= 60) { // Decrementar cada 60 frames (1 segundo a 60fps)
-            if (timer > 0) {
-                timer--;
-            }
+        if (timerCounter >= 60) {
+            if (timer > 0) timer--;
             timerCounter = 0;
         }
 
-        // Mostrar mensajes de fin de round
         if (!roundEnded) {
             p1.update(p2);
             p2.update(p1);
-
-            // Asegurar que siempre miren hacia el otro
             p1.orientTowards(p2);
             p2.orientTowards(p1);
-
             p1.draw();
             p2.draw();
 
-            drawHUD();
-
-            // CONDICIÓN: JUGADOR 1 PIERDE EL ROUND
-            if (p1.health <= 0 && !roundEnded) {
+            if (p1.health <= 0 && p1.state === 'ko' && !p1.isAnimating && p2.health > 0) {
                 roundEnded = true;
                 roundWinner = 2;
                 p2RoundsWon++;
                 console.log("ROUND " + currentRound + " GANADO POR P2. Score: P1=" + p1RoundsWon + " P2=" + p2RoundsWon);
             }
-
-            // CONDICIÓN: JUGADOR 2 PIERDE EL ROUND
-            if (p2.health <= 0 && !roundEnded) {
+            if (p2.health <= 0 && p2.state === 'ko' && !p2.isAnimating && p1.health > 0) {
                 roundEnded = true;
                 roundWinner = 1;
                 p1RoundsWon++;
                 console.log("ROUND " + currentRound + " GANADO POR P1. Score: P1=" + p1RoundsWon + " P2=" + p2RoundsWon);
             }
-
-            // CONDICIÓN: SE ACABÓ EL TIEMPO (empate en el round)
-            if (timer <= 0 && p1.health > 0 && p2.health > 0 && !roundEnded) {
+            if (p1.health <= 0 && p2.health <= 0 && p1.state === 'ko' && !p1.isAnimating && p2.state === 'ko' && !p2.isAnimating) {
                 roundEnded = true;
-                roundWinner = 0; // Empate
-                console.log("ROUND " + currentRound + " EMPATE. Score: P1=" + p1RoundsWon + " P2=" + p2RoundsWon);
+                roundWinner = 0;
+                console.log("ROUND " + currentRound + " EMPATE.");
+            }
+            if (timer <= 0 && p1.health > 0 && p2.health > 0 && !roundEnded) {
+                roundEnded = true; roundWinner = 0;
+                console.log("ROUND " + currentRound + " EMPATE.");
             }
         } else {
-            // Mostrar ganador del round durante 2 segundos, luego siguiente round
+            p1.draw();
+            p2.draw();
             showRoundWinner();
-            
-            // Contador para pasar al siguiente round (120 frames = 2 segundos a 60fps)
             roundEndTimer++;
             if (roundEndTimer >= 120) {
                 roundEndTimer = 0;
-                
-                // Verificar si ya hay un ganador final
-                if (p1RoundsWon < 2 && p2RoundsWon < 2) {
-                    nextRound();
-                }
+                if (p1RoundsWon < 2 && p2RoundsWon < 2) nextRound();
             }
         }
     } else {
@@ -594,183 +684,313 @@ function draw() {
         text("Jugadores no inicializados", 20, 60);
     }
 
-    // CONDICIÓN: GANADOR FINAL (Mejor de 3)
-    if (p1RoundsWon >= 2) {
-        showFinalWinner("PLAYER 1 WINS THE MATCH!");
-        noLoop();
-    }
+    pop(); // fin del translate de cámara
 
-    if (p2RoundsWon >= 2) {
-        showFinalWinner("PLAYER 2 WINS THE MATCH!");
-        noLoop();
-    }
+    // ── 6. HUD siempre fijo (fuera del translate) ────────────────────────────
+    if (p1 && p2 && !roundEnded) drawHUD();
+
+    // ── 7. Ganador final ─────────────────────────────────────────────────────
+    if (p1RoundsWon >= 2) { showFinalWinner("PLAYER 1 WINS THE MATCH!"); noLoop(); }
+    if (p2RoundsWon >= 2) { showFinalWinner("PLAYER 2 WINS THE MATCH!"); noLoop(); }
 }
+
+// =====================================================
+// HUD - Rediseñado para coincidir con imagen objetivo
+// =====================================================
 
 function drawHUD() {
-    
-    // FONDO SEMI-TRANSPARENTE DEL HUD
-    fill(0, 0, 0, 60);
+    textFont(selznickFont);
+
+    // Dimensiones generales del HUD
+    const HUD_H       = 160;   // altura total de la banda oscura
+    const PORT_SIZE   = 120;   // diámetro del retrato circular
+    const PORT_PAD    = 14;    // margen exterior del retrato
+    const PORT_Y      = 10;    // Y del retrato
+
+    // Anchura de cada panel de barra (izquierdo y derecho)
+    // Deja espacio para el timer central (~180px) y los retratos
+    const PANEL_W     = (width - PORT_SIZE * 2 - PORT_PAD * 4 - 200) / 2;
+    const PANEL_H     = 100;   // alto del panel de película
+    const PANEL_Y     = 12;    // Y del panel
+
+    // X inicio de cada panel (a la derecha del retrato izquierdo / izquierda del retrato derecho)
+    const PANEL_X1    = PORT_PAD + PORT_SIZE + PORT_PAD;
+    const PANEL_X2    = width - PORT_PAD - PORT_SIZE - PORT_PAD - PANEL_W;
+
+    // Barra de salud dentro del panel
+    const BAR_MARGIN  = 12;    // margen interno del panel a la barra
+    const BAR_H       = 44;    // alto de la barra
+    const BAR_Y       = PANEL_Y + (PANEL_H - BAR_H) / 2;
+
+    // ── Fondo oscuro del HUD ─────────────────────────
     noStroke();
-    rect(0, 0, width, 140);
-    
-    // ===== JUGADOR 1 (IZQUIERDA) =====
-    
-    // Sombra de la caja
-    fill(0, 0, 0, 40);
-    rect(30, 25, 550, 90, 15);
-    
-    // Caja principal P1
-    fill(30, 30, 60);
-    stroke(255, 215, 0);
-    strokeWeight(4);
-    rect(25, 20, 550, 90, 15);
-    
-    // Nombre del jugador con estilo
-    fill(255, 215, 0);
-    textSize(18);
-    textStyle(BOLD);
-    textAlign(LEFT);
-    text("P1", 45, 40);
-    
-    // Rounds ganados (mostrando coronitas o puntos)
-    fill(255, 215, 0);
-    textSize(12);
-    text("ROUNDS: ", 45, 60);
-    for (let i = 0; i < p1RoundsWon; i++) {
-        text("●", 130 + (i * 15), 60);
-    }
-    
-    // BARRA DE VIDA BACKGROUND
-    fill(40, 20, 20);
+    fill(8, 8, 22, 215);
+    rect(0, 0, width, HUD_H);
+
+    // Línea inferior sutil
+    stroke(255, 215, 0, 60);
+    strokeWeight(1);
+    line(0, HUD_H, width, HUD_H);
+
+    // ── P1: panel película + barra + retrato ─────────
+    drawFilmPanel(PANEL_X1, PANEL_Y, PANEL_W, PANEL_H, color(255, 215, 0));
+    drawHealthBar_LtoR(
+        PANEL_X1 + BAR_MARGIN,
+        BAR_Y,
+        PANEL_W - BAR_MARGIN * 2,
+        BAR_H,
+        p1.health,
+        color(0, 220, 70)
+    );
+    drawCirclePortrait(fukuaPort, PORT_PAD, PORT_Y, PORT_SIZE, color(255, 215, 0));
+
+    // Etiqueta P1 (pequeña, esquina inferior izquierda del retrato)
     noStroke();
-    rect(95, 35, 460, 30, 8);
-    
-    // BARRA DE VIDA RELLENO CON GRADIENTE
-    let healthP1 = p1.health * 4.6; // 100 * 4.6 = 460px
-    fill(0, 220, 100);
-    if (p1.health < 30) fill(255, 100, 0);
-    if (p1.health < 15) fill(255, 50, 50);
-    rect(95, 35, healthP1, 30, 8);
-    
-    // Efecto de brillo en la barra
-    fill(255, 255, 255, 80);
-    rect(95, 35, healthP1, 12, 8);
-    
-    // Texto de salud
-    fill(255);
-    textSize(14);
-    textStyle(NORMAL);
-    textAlign(CENTER);
-    text(int(p1.health) + " / 100", 325, 55);
-    
-    // Estado de salud
-    textSize(11);
-    textAlign(RIGHT);
-    if (p1.health > 60) text("BUENA", 555, 73);
-    else if (p1.health > 30) text("MEDIA", 555, 73);
-    else text("CRÍTICA", 555, 73);
-    
-    // ===== JUGADOR 2 (DERECHA) =====
-    
-    // Sombra de la caja
-    fill(0, 0, 0, 40);
-    rect(width - 580, 25, 550, 90, 15);
-    
-    // Caja principal P2
-    fill(60, 30, 30);
-    stroke(255, 100, 100);
-    strokeWeight(4);
-    rect(width - 575, 20, 550, 90, 15);
-    
-    // Nombre del jugador con estilo
-    fill(255, 100, 100);
-    textSize(18);
-    textStyle(BOLD);
-    textAlign(RIGHT);
-    text("P2", width - 45, 40);
-    
-    // Rounds ganados
-    fill(255, 100, 100);
-    textSize(12);
-    textAlign(LEFT);
-    text("ROUNDS: ", width - 555, 60);
-    for (let i = 0; i < p2RoundsWon; i++) {
-        text("●", width - 440 + (i * 15), 60);
-    }
-    
-    // BARRA DE VIDA BACKGROUND
-    fill(40, 20, 20);
-    noStroke();
-    rect(width - 555, 35, 460, 30, 8);
-    
-    // BARRA DE VIDA RELLENO CON GRADIENTE
-    let healthP2 = p2.health * 4.6;
-    fill(220, 0, 0);
-    if (p2.health < 30) fill(255, 100, 0);
-    if (p2.health < 15) fill(255, 50, 50);
-    rect(width - 555, 35, healthP2, 30, 8);
-    
-    // Efecto de brillo en la barra
-    fill(255, 255, 255, 80);
-    rect(width - 555, 35, healthP2, 12, 8);
-    
-    // Texto de salud
-    fill(255);
-    textSize(14);
-    textStyle(NORMAL);
-    textAlign(CENTER);
-    text(int(p2.health) + " / 100", width - 325, 55);
-    
-    // Estado de salud
-    textSize(11);
-    textAlign(LEFT);
-    if (p2.health > 60) text("BUENA", width - 555, 73);
-    else if (p2.health > 30) text("MEDIA", width - 555, 73);
-    else text("CRÍTICA", width - 555, 73);
-    
-    // ===== TIMER CENTRAL =====
-    
-    // Sombra del timer
-    fill(0, 0, 0, 80);
-    ellipse(width / 2, 80, 110, 110);
-    
-    // Círculo de fondo del timer
+    fill(10, 10, 10, 200);
+    rect(PORT_PAD + 2, PORT_Y + PORT_SIZE - 26, 36, 22, 4);
     fill(255, 215, 0);
-    stroke(255, 255, 0);
-    strokeWeight(4);
-    ellipse(width / 2, 75, 100, 100);
-    
-    // Círculo interior oscuro
-    fill(40, 30, 0);
-    noStroke();
-    ellipse(width / 2, 75, 85, 85);
-    
-    // Número del timer
-    fill(255, 215, 0);
-    textSize(56);
     textAlign(CENTER, CENTER);
+    textSize(14);
     textStyle(BOLD);
-    text(timer, width / 2, 78);
-    
-    // Etiqueta de round y tiempo
-    fill(200, 180, 0);
-    textSize(10);
-    textAlign(CENTER);
-    text("ROUND " + currentRound, width / 2, 110);
-    
+    text("P1", PORT_PAD + 20, PORT_Y + PORT_SIZE - 15);
+
+    // Nombre FUKUA debajo del panel
     noStroke();
+    fill(255, 215, 0);
+    textAlign(LEFT, TOP);
+    textSize(26);
+    textStyle(BOLD);
+    text("★  FUKUA", PANEL_X1 + 8, PANEL_Y + PANEL_H + 6);
+
+    // ── P2: panel película + barra + retrato ─────────
+    drawFilmPanel(PANEL_X2, PANEL_Y, PANEL_W, PANEL_H, color(255, 60, 60));
+    drawHealthBar_RtoL(
+        PANEL_X2 + BAR_MARGIN,
+        BAR_Y,
+        PANEL_W - BAR_MARGIN * 2,
+        BAR_H,
+        p2.health,
+        color(220, 30, 30)
+    );
+    const portX2 = width - PORT_PAD - PORT_SIZE;
+    drawCirclePortrait(squiglyPort, portX2, PORT_Y, PORT_SIZE, color(255, 60, 60));
+
+    // Etiqueta P2
+    noStroke();
+    fill(10, 10, 10, 200);
+    rect(portX2 + PORT_SIZE - 38, PORT_Y + PORT_SIZE - 26, 36, 22, 4);
+    fill(255, 80, 80);
+    textAlign(CENTER, CENTER);
+    textSize(14);
+    textStyle(BOLD);
+    text("P2", portX2 + PORT_SIZE - 20, PORT_Y + PORT_SIZE - 15);
+
+    // Nombre SQUIGLY debajo del panel
+    noStroke();
+    fill(255, 80, 80);
+    textAlign(RIGHT, TOP);
+    textSize(26);
+    textStyle(BOLD);
+    text("SQUIGLY  ★", PANEL_X2 + PANEL_W - 8, PANEL_Y + PANEL_H + 6);
+
+    // ── Timer central ────────────────────────────────
+    drawTimerCircle(width / 2, 68, 68);
 }
 
+// Panel estilo tira de película con puntos en borde superior e inferior
+function drawFilmPanel(x, y, w, h, borderCol) {
+    push();
+    // Fondo del panel
+    fill(12, 12, 35);
+    stroke(borderCol);
+    strokeWeight(3);
+    rect(x, y, w, h, 10);
+
+    // Puntos decorativos (perforaciones de película) arriba y abajo
+    noStroke();
+    fill(borderCol);
+    const dotR   = 5;
+    const dotGap = 20;
+    const dotCount = floor((w - 20) / dotGap);
+    for (let i = 0; i < dotCount; i++) {
+        let dx = x + 10 + i * dotGap;
+        ellipse(dx, y + 8,  dotR * 2);
+        ellipse(dx, y + h - 8, dotR * 2);
+    }
+    pop();
+}
+
+// Barra de vida que se vacía de derecha a izquierda (P1 -> llena desde la izquierda)
+function drawHealthBar_LtoR(x, y, w, h, hp, fillCol) {
+    push();
+    // Fondo negro
+    fill(20, 20, 20);
+    noStroke();
+    rect(x, y, w, h, 8);
+
+    // Relleno proporcional a la salud
+    const fillW = map(hp, 0, 100, 0, w);
+    fill(fillCol);
+    rect(x, y, fillW, h, 8);
+
+    // Brillo superior para dar volumen
+    fill(255, 255, 255, 45);
+    rect(x, y, fillW, h * 0.35, 8);
+    pop();
+}
+
+// Barra de vida que se vacía de izquierda a derecha (P2 -> llena desde la derecha)
+function drawHealthBar_RtoL(x, y, w, h, hp, fillCol) {
+    push();
+    fill(20, 20, 20);
+    noStroke();
+    rect(x, y, w, h, 8);
+
+    const fillW = map(hp, 0, 100, 0, w);
+    fill(fillCol);
+    // Dibujar desde el extremo derecho
+    rect(x + w - fillW, y, fillW, h, 8);
+
+    fill(255, 255, 255, 45);
+    rect(x + w - fillW, y, fillW, h * 0.35, 8);
+    pop();
+}
+
+// Retrato circular con doble aro y clip real
+function drawCirclePortrait(img, x, y, size, ringCol) {
+    push();
+    const cx = x + size / 2;
+    const cy = y + size / 2;
+    const r  = size / 2;
+
+    // Sombra sutil
+    noStroke();
+    fill(0, 0, 0, 100);
+    ellipse(cx + 4, cy + 4, size + 24);
+
+    // Aro exterior del color del jugador
+    stroke(ringCol);
+    strokeWeight(6);
+    fill(25, 15, 5);
+    ellipse(cx, cy, size + 18);
+
+    // Aro dorado interior fino
+    stroke(255, 215, 0);
+    strokeWeight(2);
+    noFill();
+    ellipse(cx, cy, size + 4);
+
+    // Imagen con clip circular
+    if (img) {
+        drawingContext.save();
+        drawingContext.beginPath();
+        drawingContext.arc(cx, cy, r, 0, Math.PI * 2);
+        drawingContext.clip();
+        image(img, x, y, size, size);
+        drawingContext.restore();
+    }
+    pop();
+}
+
+// Timer central: medallón circular dorado con número grande
+function drawTimerCircle(cx, cy, r) {
+    push();
+
+    // Sombra
+    noStroke();
+    fill(0, 0, 0, 110);
+    ellipse(cx + 4, cy + 4, r * 2 + 28);
+
+    // Aro exterior amarillo sólido
+    stroke(180, 130, 0);
+    strokeWeight(5);
+    fill(255, 215, 0);
+    ellipse(cx, cy, r * 2 + 24);
+
+    // Puntitos en el aro exterior (decoración tipo película)
+    noStroke();
+    fill(255, 170, 0);
+    for (let i = 0; i < 14; i++) {
+        let a = TWO_PI / 14 * i;
+        ellipse(
+            cx + cos(a) * (r + 8),
+            cy + sin(a) * (r + 8),
+            7
+        );
+    }
+
+    // Círculo interior oscuro
+    stroke(255, 215, 0);
+    strokeWeight(3);
+    fill(12, 12, 35);
+    ellipse(cx, cy, r * 2);
+
+    // Aro interior dorado fino
+    noStroke();
+    stroke(255, 215, 0, 120);
+    strokeWeight(1);
+    noFill();
+    ellipse(cx, cy, r * 1.7);
+
+    // Número del timer
+    noStroke();
+    fill(255, 240, 0);
+    textFont(selznickFont);
+    textAlign(CENTER, CENTER);
+    textStyle(BOLD);
+    textSize(56);
+    text(timer, cx, cy - 6);
+
+    // Etiqueta TIME debajo del número
+    fill(255, 215, 0);
+    textSize(14);
+    textStyle(NORMAL);
+    text("TIME", cx, cy + 30);
+
+    pop();
+}
+
+// =====================================================
+// FIN DEL HUD
+// =====================================================
 
 function startGame() {
     const menu = document.getElementById('menu-screen');
     if (menu) {
         menu.style.display = 'none';
     }
+
+    if (typeof userStartAudio === 'function') {
+        userStartAudio();
+    }
+
+    if (menuMusic && menuMusic.isPlaying()) {
+        menuMusic.stop();
+    }
+    if (stageMusic) {
+        stageMusic.setLoop(true);
+        stageMusic.setVolume(0.5);
+        stageMusic.loop();
+    }
+
     gameState = 'playing';
 }
 
+function playRandomHitSound() {
+    if (!hitSounds || hitSounds.length === 0) return;
+    const soundFile = random(hitSounds);
+    if (soundFile) {
+        soundFile.play();
+    }
+}
+
 function keyPressed() {
+
+    // Q → mostrar/ocultar cajas de debug (funciona siempre)
+    if (key === 'q' || key === 'Q') {
+        debugBoxes = !debugBoxes;
+        return;
+    }
 
     if (gameState !== 'playing') return;
 
@@ -794,12 +1014,10 @@ function keyPressed() {
 }
 
 function showRoundWinner() {
-    // Fondo semi-transparente oscuro
     fill(0, 0, 0, 180);
     noStroke();
     rect(0, 0, width, height);
 
-    // Determinar texto del round
     let txt = "";
     let color1 = 255;
     let color2 = 255;
@@ -807,22 +1025,15 @@ function showRoundWinner() {
 
     if (roundWinner === 1) {
         txt = "ROUND " + currentRound + " - PLAYER 1 WINS!";
-        color1 = 100;
-        color2 = 255;
-        color3 = 100;
+        color1 = 100; color2 = 255; color3 = 100;
     } else if (roundWinner === 2) {
         txt = "ROUND " + currentRound + " - PLAYER 2 WINS!";
-        color1 = 255;
-        color2 = 100;
-        color3 = 100;
+        color1 = 255; color2 = 100; color3 = 100;
     } else {
         txt = "ROUND " + currentRound + " - TIE!";
-        color1 = 255;
-        color2 = 215;
-        color3 = 0;
+        color1 = 255; color2 = 215; color3 = 0;
     }
 
-    // Caja del mensaje
     fill(color1, color2, color3);
     stroke(255, 255, 255);
     strokeWeight(5);
@@ -830,34 +1041,29 @@ function showRoundWinner() {
     rect(width/2, height/2 - 80, 700, 200, 20);
     rectMode(CORNER);
 
-    // Texto principal
     fill(0);
+    textFont(selznickFont);
     textSize(60);
     textStyle(BOLD);
     textAlign(CENTER, CENTER);
     text(txt, width/2, height/2 - 80);
 
-    // Score actual
     fill(100, 200, 255);
     textSize(32);
     textStyle(NORMAL);
     textAlign(CENTER);
     text("Score: P1 " + p1RoundsWon + " - " + p2RoundsWon + " P2", width/2, height/2 + 80);
 
-    // Siguiente round
     fill(200, 200, 200);
     textSize(18);
     text("Siguiente round en 2 segundos...", width/2, height/2 + 140);
 }
 
 function showFinalWinner(txt) {
-
-    // Fondo semi-transparente oscuro
     fill(0, 0, 0, 200);
     noStroke();
     rect(0, 0, width, height);
 
-    // Caja del mensaje
     fill(255, 215, 0);
     stroke(255, 255, 0);
     strokeWeight(8);
@@ -865,20 +1071,18 @@ function showFinalWinner(txt) {
     rect(width/2, height/2, 800, 400, 20);
     rectMode(CORNER);
 
-    // Texto principal
     fill(0);
+    textFont(selznickFont);
     textSize(100);
     textStyle(BOLD);
     textAlign(CENTER, CENTER);
     text(txt, width/2, height/2 - 80);
 
-    // Score final
     fill(50);
     textSize(36);
     textStyle(NORMAL);
     text("SCORE FINAL: P1 " + p1RoundsWon + " - " + p2RoundsWon + " P2", width/2, height/2 + 40);
 
-    // Subtexto
     fill(100);
     textSize(20);
     text("Presiona F5 para reiniciar", width/2, height/2 + 120);
@@ -891,12 +1095,11 @@ function nextRound() {
     roundEnded = false;
     roundWinner = null;
 
-    // Restaurar salud
     p1.health = 100;
     p2.health = 100;
-    // Restaurar posiciones, velocidades y estados a valores iniciales
-    p1.x = 250;
-    p1.y = 300;
+
+    p1.x = 200;
+    p1.y = 100;
     p1.vx = 0;
     p1.vy = 0;
     p1.onGround = true;
@@ -905,8 +1108,8 @@ function nextRound() {
     p1.changeState("idle");
     p1.facing = 1;
 
-    p2.x = width - 470;
-    p2.y = 300;
+    p2.x = width - 500;
+    p2.y = 100;
     p2.vx = 0;
     p2.vy = 0;
     p2.onGround = true;
@@ -919,13 +1122,10 @@ function nextRound() {
 }
 
 function showWinner(txt) {
-
-    // Fondo semi-transparente oscuro
     fill(0, 0, 0, 200);
     noStroke();
     rect(0, 0, width, height);
 
-    // Caja del mensaje
     fill(255, 215, 0);
     stroke(255, 255, 255);
     strokeWeight(5);
@@ -933,14 +1133,13 @@ function showWinner(txt) {
     rect(width/2, height/2, 700, 300, 20);
     rectMode(CORNER);
 
-    // Texto principal
     fill(0);
+    textFont(selznickFont);
     textSize(80);
     textStyle(BOLD);
     textAlign(CENTER, CENTER);
     text(txt, width/2, height/2 - 40);
 
-    // Subtexto
     fill(50);
     textSize(24);
     textStyle(NORMAL);

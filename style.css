@@ -87,6 +87,15 @@ canvas{
 .menu-instructions {
     margin-top: 16px;
     color: #f5f5f5;
-    font-size: 0.98rem;
-    line-height: 1.65;
+    font-size: 1.25rem;
+    line-height: 1.55;
+}
+
+.menu-instructions p {
+    margin: 10px 0;
+}
+
+.menu-instructions strong {
+    font-size: 1.12rem;
+    color: #ffd700;
 }
